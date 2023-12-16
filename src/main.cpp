@@ -45,7 +45,7 @@ bool ensureConfigExists()
  * @return 0 if successful, 1 if failed
  */
 int listing(const std::map<std::string, std::vector<std::string>> &DetectedICDs);
-int ListIOCDs(const cxxopts::ParseResult args);
+int ListIOCDs();
 int execute(const cxxopts::ParseResult args);
 
 bool saveconfig(nlohmann::json config)
@@ -68,14 +68,14 @@ nlohmann::json loadconfig()
     configStream >> config;
     return config;
 }
-int init(const cxxopts::ParseResult args)
+int init()
 {
     if (!std::filesystem::exists(fmt::format("{}/.config/ICDHlpr", homeDir)))
     {
         std::filesystem::create_directories(fmt::format("{}/.config/ICDHlpr", homeDir));
         std::ofstream config(fmt::format("{}/.config/ICDHlpr/config.json", homeDir));
     }
-    ListIOCDs(args);
+    ListIOCDs();
     return 0;
 }
 
@@ -102,11 +102,11 @@ bool checkMutexGroups(const cxxopts::ParseResult args, const std::vector<std::ve
 int update(const cxxopts::ParseResult args)
 {
     if(!ensureConfigExists()) return 1;
-    ListIOCDs(args); // update the ICDs and cache them
+    ListIOCDs(); // update the ICDs and cache them
     auto config = loadconfig();
     IndexedEntries entries = config["ICDs"];
     try{ 
-        int idx = args["update"].as<int>(); 
+        size_t idx = args["update"].as<int>(); 
         if(idx < 0 || idx >= entries.size()){ 
             fmt::print("Error: Index out of range\n");
             return 1;
@@ -121,18 +121,19 @@ int update(const cxxopts::ParseResult args)
     return 0;
 }
 
-int prcessOptions(cxxopts::ParseResult args)
+int processOptions(cxxopts::ParseResult args)
 {
     std::vector<std::vector<std::string>> mutexGroups = {
         {"update", "override"},
         {"list", "executable"}};
     if (!checkMutexGroups(args, mutexGroups))
         return 1;
-    std::map<std::string, std::function<int(const cxxopts::ParseResult)>> optionsMap = {
-        {"update", update},
-        {"override", init},
-        {"list", ListIOCDs},
-        {"executable", execute}};
+    std::map<std::string, std::function<int(cxxopts::ParseResult)>> optionsMap = {
+        {"update",[&args] (cxxopts::ParseResult) -> int {return update(args);} },
+        {"override", [](cxxopts::ParseResult) { return init(); }},
+        {"list", [](cxxopts::ParseResult) { return ListIOCDs(); }},
+        {"executable", [&args] (cxxopts::ParseResult) -> int {return execute(args);}}
+        };
     for (auto option : args.arguments())
         if (optionsMap.count(option.key()))
             return optionsMap[option.key()](args);
@@ -155,7 +156,7 @@ int main(int argc, char **argv)
         fmt::print("{}\n", options.help());
         return 0;
     }
-    return prcessOptions(result);
+    return processOptions(result);
 }
 
 int execute(const cxxopts::ParseResult args)
@@ -232,7 +233,7 @@ Entries combineICDs(const std::vector<std::string> &ICDs)
     return combined;
 }
 
-int ListIOCDs(const cxxopts::ParseResult args)
+int ListIOCDs()
 {
     // list all ICDs in /etc/vulkan/icd.d
     std::filesystem::path systemICDPath("/usr/share/vulkan/icd.d");
@@ -282,7 +283,7 @@ int listing(const std::map<std::string, std::vector<std::string>> &DetectedICDs)
     Entries entries = combineICDs(combined);
     int returnCode = 0;
     IndexedEntries EntriesWithIndex;
-    for (int i = 0; i < entries.size(); i++)
+    for (size_t i = 0; i < entries.size(); i++)
     {
         fmt::print("{}: {}\n", i, entries[i].first);
         EntriesWithIndex.push_back({i,entries[i]});
