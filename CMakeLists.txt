@@ -10,12 +10,12 @@ CPMAddPackage("gh:fmtlib/fmt#7.1.3")
 CPMAddPackage(
   NAME nlohmann_json
   GITHUB_REPOSITORY nlohmann/json
-  VERSION 3.9.1
+  VERSION 3.11.3
   OPTIONS "JSON_BuildTests OFF" "JSON_Install OFF"
 )
 CPMAddPackage(
   GITHUB_REPOSITORY jarro2783/cxxopts
-  VERSION 2.2.1
+  VERSION 3.1.1
   OPTIONS "CXXOPTS_BUILD_EXAMPLES NO" "CXXOPTS_BUILD_TESTS NO" "CXXOPTS_ENABLE_INSTALL YES"
 )
 
@@ -24,4 +24,4 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 
 add_executable(${CMAKE_PROJECT_NAME} src/main.cpp)
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE fmt::fmt cxxopts)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE fmt::fmt cxxopts nlohmann_json::nlohmann_json)

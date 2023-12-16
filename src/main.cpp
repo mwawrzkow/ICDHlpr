@@ -16,6 +16,26 @@
 #include <regex>
 std::string_view programName;
 std::string_view homeDir;
+typedef std::pair<std::string, std::vector<std::string>> Entry;
+typedef std::vector<Entry> Entries;
+typedef std::vector<std::pair<int, Entry>> IndexedEntries;
+bool ensureConfigExists()
+{
+    std::filesystem::path configPath(fmt::format("{}/.config/ICDHlpr/config.json", homeDir));
+    if (!std::filesystem::exists(configPath))
+    {
+        try{ 
+            std::filesystem::create_directories(fmt::format("{}/.config/ICDHlpr", homeDir));
+            std::ofstream configStream(configPath);
+            configStream << "{}";
+            return true;
+        }catch(std::exception &e){
+            fmt::print("Error: {}\n", e.what());
+            return false;
+        }
+    }else 
+    return true;
+}
 /**
  * @brief List all ICDs and cache them in a json file
  *        If the json file exists, read from it and warn if the ICDs have changed
@@ -25,6 +45,7 @@ std::string_view homeDir;
  * @return 0 if successful, 1 if failed
  */
 int listing(const std::map<std::string, std::vector<std::string>> &DetectedICDs);
+int ListIOCDs(const cxxopts::ParseResult args);
 
 int init(const cxxopts::ParseResult args)
 {
@@ -33,6 +54,7 @@ int init(const cxxopts::ParseResult args)
         std::filesystem::create_directories(fmt::format("{}/.config/ICDHlpr", homeDir));
         std::ofstream config(fmt::format("{}/.config/ICDHlpr/config.json", homeDir));
     }
+    ListIOCDs(args);
     return 0;
 }
 
@@ -55,6 +77,106 @@ bool checkMutexGroups(const cxxopts::ParseResult args, const std::vector<std::ve
         }
     }
     return true;
+}
+int update(const cxxopts::ParseResult args)
+{
+    if(!ensureConfigExists()) return 1;
+    ListIOCDs(args); // update the ICDs and cache them
+    using json = nlohmann::json;
+    std::filesystem::path configPath(fmt::format("{}/.config/ICDHlpr/config.json", homeDir));
+    json config;
+    std::ifstream configStream(configPath);
+    configStream >> config;
+    IndexedEntries entries = config["ICDs"];
+    try{ 
+        int idx = args["update"].as<int>(); 
+        if(idx < 0 || idx >= entries.size()){ 
+            fmt::print("Error: Index out of range\n");
+            return 1;
+        };
+        config["current"] = entries[idx].first;
+    }catch(std::exception &e){ 
+        fmt::print("Error: Please provide an index\n");
+        return 1;
+    }
+    return 0;
+}
+
+int prcessOptions(cxxopts::ParseResult args)
+{
+    std::vector<std::vector<std::string>> mutexGroups = {
+        {"update", "override"},
+        {"list", "executable"}};
+    if (!checkMutexGroups(args, mutexGroups))
+        return 1;
+    std::map<std::string, std::function<int(const cxxopts::ParseResult)>> optionsMap = {
+        {"update", update},
+        {"override", init},
+        {"list", ListIOCDs},
+        {"executable", init}};
+    for (auto option : args.arguments())
+        if (optionsMap.count(option.key()))
+            return optionsMap[option.key()](args);
+    return 1;
+}
+
+int main(int argc, char **argv)
+{
+    struct passwd *pw = getpwuid(getuid());
+    homeDir = pw->pw_dir;
+    programName = argv[0];
+    cxxopts::Options options(std::string(programName), "ICD Helper for Vulkan applications");
+    options.add_options()("h,help", "Print help")("u,update", "Update using ICD driver")("o,override", "Override existing ICD driver")("l,list", "List all ICD drivers")("executable", "Executable file", cxxopts::value<std::string>())("p,positional", "Positional arguments", cxxopts::value<std::vector<std::string>>());
+    // default mapping is to executable and positional arguments
+    options.parse_positional({"executable", "positional"});
+    auto result = options.parse(argc, argv);
+    if (result.count("help") || result.arguments().size() == 0)
+    {
+        fmt::print("IDK how I get here\n");
+        fmt::print("{}\n", options.help());
+        return 0;
+    }
+    return prcessOptions(result);
+}
+Entries combineICDs(const std::vector<std::string> &ICDs)
+{
+    using path = std::filesystem::path;
+    // Map to store unique ICD names with their architectures and paths
+    std::map<std::string, std::pair<std::vector<std::string>, std::vector<std::string>>> mapCombined;
+
+    auto removeExtension = [](const std::string &ICDName)
+    {
+        return std::regex_replace(ICDName, std::regex(".json"), "");
+    };
+
+    for (const auto &ICD : ICDs)
+    {
+        path ICDPath(ICD);
+        std::string ICDName = ICDPath.filename().string();
+        int index = ICDName.find_first_of("0123456789");
+        std::string ICDNameWithoutArch = ICDName.substr(0, index);
+        std::string arch = removeExtension(ICDName.substr(index));
+
+        // Insert or update the map entry
+        mapCombined[ICDNameWithoutArch].first.push_back(arch);
+        mapCombined[ICDNameWithoutArch].second.push_back(ICD);
+    }
+
+    // Remove duplicate architectures and create the final combined vector
+    Entries combined;
+    for (auto &entry : mapCombined)
+    {
+        // Remove duplicates in architectures
+        auto &archs = entry.second.first;
+        std::sort(archs.begin(), archs.end());
+        archs.erase(std::unique(archs.begin(), archs.end()), archs.end());
+
+        // Format the string with architectures
+        std::string formattedName = fmt::format("{}({})", entry.first, fmt::join(archs, ","));
+
+        combined.push_back({formattedName, entry.second.second});
+    }
+    return combined;
 }
 
 int ListIOCDs(const cxxopts::ParseResult args)
@@ -95,81 +217,6 @@ int ListIOCDs(const cxxopts::ParseResult args)
     return listing(ICDs);
 }
 
-int prcessOptions(cxxopts::ParseResult args)
-{
-    std::vector<std::vector<std::string>> mutexGroups = {
-        {"update", "override"},
-        {"list", "executable"}};
-    if (!checkMutexGroups(args, mutexGroups))
-        return 1;
-    std::map<std::string, std::function<int(const cxxopts::ParseResult)>> optionsMap = {
-        {"update", init},
-        {"override", init},
-        {"list", ListIOCDs},
-        {"executable", init}};
-    for (auto option : args.arguments())
-        if (optionsMap.count(option.key()))
-            return optionsMap[option.key()](args);
-}
-
-int main(int argc, char **argv)
-{
-    struct passwd *pw = getpwuid(getuid());
-    homeDir = pw->pw_dir;
-    programName = argv[0];
-    cxxopts::Options options(std::string(programName), "ICD Helper for Vulkan applications");
-    options.add_options()("h,help", "Print help")("u,update", "Update using ICD driver")("o,override", "Override existing ICD driver")("l,list", "List all ICD drivers")("executable", "Executable file", cxxopts::value<std::string>())("p,positional", "Positional arguments", cxxopts::value<std::vector<std::string>>());
-    // default mapping is to executable and positional arguments
-    options.parse_positional({"executable", "positional"});
-    auto result = options.parse(argc, argv);
-    if (result.count("help") || result.arguments().size() == 0)
-    {
-        fmt::print("IDK how I get here\n");
-        fmt::print("{}\n", options.help());
-        return 0;
-    }
-    return prcessOptions(result);
-}
-std::vector<std::pair<std::string, std::vector<std::string>>> combineICDs(const std::vector<std::string> &ICDs)
-{
-    using path = std::filesystem::path;
-    // Map to store unique ICD names with their architectures and paths
-    std::map<std::string, std::pair<std::vector<std::string>, std::vector<std::string>>> mapCombined;
-
-    auto removeExtension = [](const std::string &ICDName)
-    {
-        return std::regex_replace(ICDName, std::regex(".json"), "");
-    };
-
-    for (const auto &ICD : ICDs)
-    {
-        path ICDPath(ICD);
-        std::string ICDName = ICDPath.filename().string();
-        int index = ICDName.find_first_of("0123456789");
-        std::string ICDNameWithoutArch = ICDName.substr(0, index);
-        std::string arch = removeExtension(ICDName.substr(index));
-
-        // Insert or update the map entry
-        mapCombined[ICDNameWithoutArch].first.push_back(arch);
-        mapCombined[ICDNameWithoutArch].second.push_back(ICD);
-    }
-
-    // Remove duplicate architectures and create the final combined vector
-    std::vector<std::pair<std::string, std::vector<std::string>>> combined;
-    for (auto &entry : mapCombined)
-    {
-        // Remove duplicates in architectures
-        auto &archs = entry.second.first;
-        std::sort(archs.begin(), archs.end());
-        archs.erase(std::unique(archs.begin(), archs.end()), archs.end());
-
-        // Format the string with architectures
-        std::string formattedName = fmt::format("{}({})", entry.first, fmt::join(archs, ","));
-
-        combined.push_back({formattedName, entry.second.second});
-    }
-    return combined;
-}
 
 int listing(const std::map<std::string, std::vector<std::string>> &DetectedICDs)
 {
@@ -194,18 +241,21 @@ int listing(const std::map<std::string, std::vector<std::string>> &DetectedICDs)
     if (DetectedICDs.find("user") != DetectedICDs.end())
         combined.insert(combined.end(), DetectedICDs.at("user").begin(), DetectedICDs.at("user").end());
     std::sort(combined.begin(), combined.end());
-    // check if ICDs have changed
-    auto Entries = combineICDs(combined);
-    if (config["ICDs"] != Entries)
+    Entries entries = combineICDs(combined);
+    int returnCode = 0;
+    IndexedEntries EntriesWithIndex;
+    for (int i = 0; i < entries.size(); i++)
+    {
+        fmt::print("{}: {}\n", i, entries[i].first);
+        EntriesWithIndex.push_back({i,entries[i]});
+    }
+    if (config["ICDs"] != EntriesWithIndex)
     {
         fmt::print("Warning: ICDs have changed\n");
+        returnCode = 1;
     }
-    for (int i = 0; i < Entries.size(); i++)
-    {
-        fmt::print("{}: {}\n", i, Entries[i].first);
-    }
-    config["ICDs"] = Entries;
+    config["ICDs"] = EntriesWithIndex;
     std::ofstream configStream(configPath);
     configStream << config.dump(4);
-    return 0;
+    return 1;
 }
