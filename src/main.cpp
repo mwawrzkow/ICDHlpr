@@ -46,7 +46,28 @@ bool ensureConfigExists()
  */
 int listing(const std::map<std::string, std::vector<std::string>> &DetectedICDs);
 int ListIOCDs(const cxxopts::ParseResult args);
+int execute(const cxxopts::ParseResult args);
 
+bool saveconfig(nlohmann::json config)
+{
+    try{
+    std::filesystem::path configPath(fmt::format("{}/.config/ICDHlpr/config.json", homeDir));
+    std::ofstream configStream(configPath);
+    configStream << config.dump(4);
+    }catch(std::exception &e){
+        fmt::print("Error: {}\n", e.what());
+        return false;
+    }
+    return true;
+}
+nlohmann::json loadconfig()
+{
+    std::filesystem::path configPath(fmt::format("{}/.config/ICDHlpr/config.json", homeDir));
+    nlohmann::json config;
+    std::ifstream configStream(configPath);
+    configStream >> config;
+    return config;
+}
 int init(const cxxopts::ParseResult args)
 {
     if (!std::filesystem::exists(fmt::format("{}/.config/ICDHlpr", homeDir)))
@@ -82,11 +103,7 @@ int update(const cxxopts::ParseResult args)
 {
     if(!ensureConfigExists()) return 1;
     ListIOCDs(args); // update the ICDs and cache them
-    using json = nlohmann::json;
-    std::filesystem::path configPath(fmt::format("{}/.config/ICDHlpr/config.json", homeDir));
-    json config;
-    std::ifstream configStream(configPath);
-    configStream >> config;
+    auto config = loadconfig();
     IndexedEntries entries = config["ICDs"];
     try{ 
         int idx = args["update"].as<int>(); 
@@ -94,11 +111,13 @@ int update(const cxxopts::ParseResult args)
             fmt::print("Error: Index out of range\n");
             return 1;
         };
+        fmt::print("Updating to {}\n", entries[idx].first);
         config["current"] = entries[idx].first;
     }catch(std::exception &e){ 
         fmt::print("Error: Please provide an index\n");
         return 1;
     }
+    saveconfig(config);
     return 0;
 }
 
@@ -113,7 +132,7 @@ int prcessOptions(cxxopts::ParseResult args)
         {"update", update},
         {"override", init},
         {"list", ListIOCDs},
-        {"executable", init}};
+        {"executable", execute}};
     for (auto option : args.arguments())
         if (optionsMap.count(option.key()))
             return optionsMap[option.key()](args);
@@ -126,7 +145,7 @@ int main(int argc, char **argv)
     homeDir = pw->pw_dir;
     programName = argv[0];
     cxxopts::Options options(std::string(programName), "ICD Helper for Vulkan applications");
-    options.add_options()("h,help", "Print help")("u,update", "Update using ICD driver")("o,override", "Override existing ICD driver")("l,list", "List all ICD drivers")("executable", "Executable file", cxxopts::value<std::string>())("p,positional", "Positional arguments", cxxopts::value<std::vector<std::string>>());
+    options.add_options()("h,help", "Print help")("u,update", "Update using ICD driver", cxxopts::value<int>())("o,override", "Override existing ICD driver")("l,list", "List all ICD drivers")("executable", "Executable file", cxxopts::value<std::string>())("p,positional", "Positional arguments", cxxopts::value<std::vector<std::string>>());
     // default mapping is to executable and positional arguments
     options.parse_positional({"executable", "positional"});
     auto result = options.parse(argc, argv);
@@ -138,6 +157,40 @@ int main(int argc, char **argv)
     }
     return prcessOptions(result);
 }
+
+int execute(const cxxopts::ParseResult args)
+{
+    if(!ensureConfigExists()) return 1;
+    auto config = loadconfig();
+    std::string executable = args["executable"].as<std::string>();
+    // check if executable exists
+    if (!std::filesystem::exists(executable))
+    {
+        fmt::print("Error: Executable {} does not exist\n", executable);
+        return 1;
+    }
+    std::vector<std::string> positional = args["positional"].as<std::vector<std::string>>();
+    std::string argsString = fmt::format("{}", fmt::join(positional, " "));
+    // create environment variable for ICD and also set 
+    // AMD_VULKAN_ICD=RADV
+    // DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1
+    std::string env = fmt::format("AMD_VULKAN_ICD=RADV DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1");
+    IndexedEntries entries = config["ICDs"];
+    try{ 
+        int ICDName = config["current"];
+        std::vector<std::string> ICDs = entries[ICDName].second.second;
+        env += fmt::format(" VK_ICD_FILENAMES={}", fmt::join(ICDs, ":"));
+    }catch(std::exception &e){
+        fmt::print("Error: Please select an ICD driver\n");
+        fmt::print("Use {} -l to list all ICD drivers\n", programName);
+        fmt::print("Use {} -u <index> to select an ICD driver\n", programName);
+        return 1;
+    }
+    char *envp[] = {env.data(), NULL};
+    fmt::print("Executing {} {} with {}\n", executable, argsString, env);
+    return execve(executable.data(), (char *const *)positional.data(), envp);    
+}
+
 Entries combineICDs(const std::vector<std::string> &ICDs)
 {
     using path = std::filesystem::path;
@@ -221,22 +274,7 @@ int ListIOCDs(const cxxopts::ParseResult args)
 int listing(const std::map<std::string, std::vector<std::string>> &DetectedICDs)
 {
 
-    std::filesystem::path configPath(fmt::format("{}/.config/ICDHlpr/config.json", homeDir));
-    //  this lambda function should combine 32 and 64 bit ICDs into one and provide a string which will tell the arch of the ICD
-
-    using json = nlohmann::json;
-    json config;
-    if (std::filesystem::exists(configPath)) // sanity check
-    {
-        std::ifstream configStream(configPath);
-        configStream >> config;
-    }
-    else
-    {
-        std::filesystem::create_directories(fmt::format("{}/.config/ICDHlpr", homeDir));
-        std::ofstream configStream(configPath);
-        configStream << "{}";
-    }
+    auto config = loadconfig();
     std::vector<std::string> combined = DetectedICDs.at("system");
     if (DetectedICDs.find("user") != DetectedICDs.end())
         combined.insert(combined.end(), DetectedICDs.at("user").begin(), DetectedICDs.at("user").end());
@@ -255,7 +293,6 @@ int listing(const std::map<std::string, std::vector<std::string>> &DetectedICDs)
         returnCode = 1;
     }
     config["ICDs"] = EntriesWithIndex;
-    std::ofstream configStream(configPath);
-    configStream << config.dump(4);
-    return 1;
+    saveconfig(config);
+    return returnCode;
 }
