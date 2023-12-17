@@ -24,4 +24,4 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_compile_options(-Wall -Wextra -Wpedantic -Werror)
 add_executable(${CMAKE_PROJECT_NAME} src/main.cpp)
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE fmt::fmt cxxopts nlohmann_json::nlohmann_json)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE fmt::fmt cxxopts nlohmann_json::nlohmann_json X11)
