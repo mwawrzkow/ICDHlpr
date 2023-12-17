@@ -95,8 +95,8 @@ int update(const cxxopts::ParseResult args) {
     auto config = loadconfig();
     IndexedEntries entries = config["ICDs"];
     try {
-        size_t idx = args["update"].as<int>();
-        if (idx < 0 || idx >= entries.size()) {
+        size_t idx = args["update"].as<size_t>();
+        if (idx >= entries.size()) {
             fmt::print("Error: Index out of range\n");
             return 1;
         };
