@@ -1,5 +1,3 @@
-// test cxxopts
-// and fmt
 #include <iostream>
 #include <string>
 #include <vector>
@@ -14,6 +12,7 @@
 #include <sys/types.h>
 #include <pwd.h>
 #include <regex>
+#include <X11/Xlib.h>
 std::string_view programName;
 std::string_view homeDir;
 typedef std::pair<std::string, std::vector<std::string>> Entry;
@@ -24,17 +23,21 @@ bool ensureConfigExists()
     std::filesystem::path configPath(fmt::format("{}/.config/ICDHlpr/config.json", homeDir));
     if (!std::filesystem::exists(configPath))
     {
-        try{ 
+        try
+        {
             std::filesystem::create_directories(fmt::format("{}/.config/ICDHlpr", homeDir));
             std::ofstream configStream(configPath);
             configStream << "{}";
             return true;
-        }catch(std::exception &e){
+        }
+        catch (std::exception &e)
+        {
             fmt::print("Error: {}\n", e.what());
             return false;
         }
-    }else 
-    return true;
+    }
+    else
+        return true;
 }
 /**
  * @brief List all ICDs and cache them in a json file
@@ -50,11 +53,14 @@ int execute(const cxxopts::ParseResult args);
 
 bool saveconfig(nlohmann::json config)
 {
-    try{
-    std::filesystem::path configPath(fmt::format("{}/.config/ICDHlpr/config.json", homeDir));
-    std::ofstream configStream(configPath);
-    configStream << config.dump(4);
-    }catch(std::exception &e){
+    try
+    {
+        std::filesystem::path configPath(fmt::format("{}/.config/ICDHlpr/config.json", homeDir));
+        std::ofstream configStream(configPath);
+        configStream << config.dump(4);
+    }
+    catch (std::exception &e)
+    {
         fmt::print("Error: {}\n", e.what());
         return false;
     }
@@ -101,19 +107,24 @@ bool checkMutexGroups(const cxxopts::ParseResult args, const std::vector<std::ve
 }
 int update(const cxxopts::ParseResult args)
 {
-    if(!ensureConfigExists()) return 1;
+    if (!ensureConfigExists())
+        return 1;
     ListIOCDs(); // update the ICDs and cache them
     auto config = loadconfig();
     IndexedEntries entries = config["ICDs"];
-    try{ 
-        size_t idx = args["update"].as<int>(); 
-        if(idx < 0 || idx >= entries.size()){ 
+    try
+    {
+        size_t idx = args["update"].as<int>();
+        if (idx < 0 || idx >= entries.size())
+        {
             fmt::print("Error: Index out of range\n");
             return 1;
         };
         fmt::print("Updating to {}\n", entries[idx].first);
         config["current"] = entries[idx].first;
-    }catch(std::exception &e){ 
+    }
+    catch (std::exception &e)
+    {
         fmt::print("Error: Please provide an index\n");
         return 1;
     }
@@ -129,11 +140,14 @@ int processOptions(cxxopts::ParseResult args)
     if (!checkMutexGroups(args, mutexGroups))
         return 1;
     std::map<std::string, std::function<int(cxxopts::ParseResult)>> optionsMap = {
-        {"update",[&args] (cxxopts::ParseResult) -> int {return update(args);} },
-        {"override", [](cxxopts::ParseResult) { return init(); }},
-        {"list", [](cxxopts::ParseResult) { return ListIOCDs(); }},
-        {"executable", [&args] (cxxopts::ParseResult) -> int {return execute(args);}}
-        };
+        {"update", [&args](cxxopts::ParseResult) -> int
+         { return update(args); }},
+        {"override", [](cxxopts::ParseResult)
+         { return init(); }},
+        {"list", [](cxxopts::ParseResult)
+         { return ListIOCDs(); }},
+        {"executable", [&args](cxxopts::ParseResult) -> int
+         { return execute(args); }}};
     for (auto option : args.arguments())
         if (optionsMap.count(option.key()))
             return optionsMap[option.key()](args);
@@ -159,37 +173,154 @@ int main(int argc, char **argv)
     return processOptions(result);
 }
 
+bool checkDisplay(std::string display)
+{
+    fmt::print("Checking display {}\n", display);
+    Display *d = XOpenDisplay(display.data());
+    if (d)
+    {
+        XCloseDisplay(d);
+        return true;
+    }
+    else
+        return false;
+}
+
 int execute(const cxxopts::ParseResult args)
 {
-    if(!ensureConfigExists()) return 1;
+    if (!ensureConfigExists())
+        return 1;
     auto config = loadconfig();
+
     std::string executable = args["executable"].as<std::string>();
     // check if executable exists
     if (!std::filesystem::exists(executable))
     {
         fmt::print("Error: Executable {} does not exist\n", executable);
-        return 1;
+        // try to find it in PATH
+        std::string pathEnv = std::getenv("PATH");
+        fmt::print("PATH: {}\n", pathEnv);
+        std::vector<std::string> paths;
+        std::string delimiter = ":";
+        size_t pos = 0;
+        std::string token;
+        while ((pos = pathEnv.find(delimiter)) != std::string::npos)
+        {
+            token = pathEnv.substr(0, pos);
+            paths.push_back(token);
+            pathEnv.erase(0, pos + delimiter.length());
+        }
+        for (auto &path : paths)
+        {
+            fmt::print("Checking {} for {}\n", path, executable);
+            std::filesystem::path executablePath(fmt::format("{}/{}", path, executable));
+            if (std::filesystem::exists(executablePath))
+            {
+                fmt::print("Found executable {} in {}\n", executable, path);
+                executable = executablePath.string();
+                break;
+            }
+        }
+        if (!std::filesystem::exists(executable))
+            return 1;
     }
-    std::vector<std::string> positional = args["positional"].as<std::vector<std::string>>();
-    std::string argsString = fmt::format("{}", fmt::join(positional, " "));
-    // create environment variable for ICD and also set 
-    // AMD_VULKAN_ICD=RADV
-    // DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1
-    std::string env = fmt::format("AMD_VULKAN_ICD=RADV DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1");
+    std::vector<std::string> positional;
+    try
+    {
+        positional = args["positional"].as<std::vector<std::string>>();
+    }
+    catch (std::exception &e)
+    {
+        fmt::print("Running without positional arguments\n");
+    }
+    std::vector<char *> envs;
+    // std::string env = fmt::format("AMD_VULKAN_ICD=RADV DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1");
+    envs.push_back(strdup("AMD_VULKAN_ICD=RADV"));
+    envs.push_back(strdup("DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1"));
+    // find working display
+    std::string display = std::getenv("DISPLAY");
+    std::string displayvalue = display.substr(display.find_first_of(":") + 1);
+    if (!checkDisplay(display))
+    {
+        fmt::print("Error: DISPLAY environment variable is not set\n");
+        // find a working display
+        std::vector<std::string> displays = {":0", ":1", ":2", ":3", ":4", ":5", ":6", ":7", ":8", ":9"};
+        bool found = false;
+        for (auto &display : displays)
+        {
+            if (checkDisplay(display))
+            {
+                found = true;
+                envs.push_back(strdup(fmt::format("DISPLAY={}", display).c_str()));
+                break;
+            }
+        }
+        if (!found)
+        {
+            fmt::print("Error: No working display found\n");
+            fmt::print("Please set DISPLAY environment variable\n");
+            fmt::print("or review your X11 configuration\n");
+            return 1;
+        }
+    }
+    else
+    {
+        // first test if the display is working
+        envs.push_back(strdup(fmt::format("DISPLAY={}", display).c_str()));
+    }
     IndexedEntries entries = config["ICDs"];
-    try{ 
+    try
+    {
         int ICDName = config["current"];
         std::vector<std::string> ICDs = entries[ICDName].second.second;
-        env += fmt::format(" VK_ICD_FILENAMES={}", fmt::join(ICDs, ":"));
-    }catch(std::exception &e){
+        envs.push_back(strdup(fmt::format("VK_ICD_FILENAMES={}", fmt::join(ICDs, ":")).c_str()));
+    }
+    catch (std::exception &e)
+    {
         fmt::print("Error: Please select an ICD driver\n");
         fmt::print("Use {} -l to list all ICD drivers\n", programName);
         fmt::print("Use {} -u <index> to select an ICD driver\n", programName);
         return 1;
     }
-    char *envp[] = {env.data(), NULL};
-    fmt::print("Executing {} {} with {}\n", executable, argsString, env);
-    return execve(executable.data(), (char *const *)positional.data(), envp);    
+    envs.push_back(nullptr);
+    char **envp = new char *[envs.size()];
+    for (size_t i = 0; i < envs.size(); ++i)
+    {
+        envp[i] = envs[i];
+    }
+    std::vector<char *> argv;
+    argv.push_back(strdup(executable.c_str()));
+    for (auto &arg : positional)
+    {
+        argv.push_back(strdup(arg.c_str()));
+    }
+    argv.push_back(nullptr);
+    // print how the program will be executed
+    std::string command;
+    for (auto &arg : argv)
+    {
+        if (arg == nullptr)
+            break;
+        command += arg;
+        command += " ";
+    }
+    fmt::print("Environment variables:\n");
+    for (auto &env : envs)
+    {
+        if (env == nullptr)
+        {
+            continue;
+        }
+        fmt::print("{}\n", env);
+    }
+    // create new process
+    int result = execve(executable.c_str(), argv.data(), envp);
+    for (auto &arg : argv)
+        delete[] arg;
+    for (size_t i = 0; i < envs.size(); ++i)
+        free(envp[i]);
+    delete[] envp;
+    return result;
 }
 
 Entries combineICDs(const std::vector<std::string> &ICDs)
@@ -271,7 +402,6 @@ int ListIOCDs()
     return listing(ICDs);
 }
 
-
 int listing(const std::map<std::string, std::vector<std::string>> &DetectedICDs)
 {
 
@@ -286,7 +416,7 @@ int listing(const std::map<std::string, std::vector<std::string>> &DetectedICDs)
     for (size_t i = 0; i < entries.size(); i++)
     {
         fmt::print("{}: {}\n", i, entries[i].first);
-        EntriesWithIndex.push_back({i,entries[i]});
+        EntriesWithIndex.push_back({i, entries[i]});
     }
     if (config["ICDs"] != EntriesWithIndex)
     {
